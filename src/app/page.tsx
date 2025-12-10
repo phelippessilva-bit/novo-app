@@ -1,573 +1,935 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { TrendingUp, TrendingDown, Hash, AlertCircle, Trash2, Plus, Camera, Info, Upload, Loader2 } from "lucide-react"
-
-type Pattern = {
-  type: "crescente" | "decrescente" | "terminal"
-  count: number
-  nextExpected: number | string
-  probability: number
-  active: boolean
-}
+import { TrendingUp, TrendingDown, Hash, AlertCircle, Trash2, Plus, Camera, Info, Upload, Loader2, Target, Zap, Database, TrendingUpIcon, Ghost, DollarSign, CheckCircle, XCircle } from "lucide-react"
+import { detectAllPatterns, DetectedPattern, detectarNumerosPuxam } from "@/lib/pattern-detectors"
+import { 
+  saveNumberToHistory, 
+  getLastNumbers, 
+  getAllHistory, 
+  clearHistory,
+  generateSuggestions,
+  saveSuggestion,
+  type SuggestionResult,
+  type RouletteHistoryEntry
+} from "@/lib/supabase-db"
 
 export default function RouletteAnalyzer() {
   const [numbers, setNumbers] = useState<number[]>([])
   const [inputValue, setInputValue] = useState("")
-  const [patterns, setPatterns] = useState<Pattern[]>([])
+  const [patterns, setPatterns] = useState<DetectedPattern[]>([])
   const [notifications, setNotifications] = useState<string[]>([])
   const [showHelp, setShowHelp] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [ocrResult, setOcrResult] = useState<string>("")
   const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // Novos estados para banco de dados
+  const [dbConnected, setDbConnected] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [suggestions, setSuggestions] = useState<SuggestionResult | null>(null)
+  const [showSuggestions, setShowSuggestions] = useState(false)
+
+  // Estados para gerenciamento de metas
+  const [saldoInicial, setSaldoInicial] = useState<number>(0)
+  const [saldoAtual, setSaldoAtual] = useState<number>(0)
+  const [stopGreen, setStopGreen] = useState<number>(0)
+  const [stopRed, setStopRed] = useState<number>(0)
+  const [valorAposta, setValorAposta] = useState<number>(0)
+  const [metaAtingida, setMetaAtingida] = useState<"green" | "red" | null>(null)
+  const [showMetasConfig, setShowMetasConfig] = useState(false)
+  const [metasConfiguradas, setMetasConfiguradas] = useState(false)
+
+  // Carregar histórico do banco ao iniciar
+  useEffect(() => {
+    loadHistoryFromDB()
+    // Carregar metas do localStorage
+    const savedMetas = localStorage.getItem('fantasma-metas')
+    if (savedMetas) {
+      const metas = JSON.parse(savedMetas)
+      setSaldoInicial(metas.saldoInicial || 0)
+      setSaldoAtual(metas.saldoAtual || 0)
+      setStopGreen(metas.stopGreen || 0)
+      setStopRed(metas.stopRed || 0)
+      setValorAposta(metas.valorAposta || 0)
+      setMetasConfiguradas(metas.metasConfiguradas || false)
+    }
+  }, [])
+
+  // Salvar metas no localStorage
+  useEffect(() => {
+    if (metasConfiguradas) {
+      localStorage.setItem('fantasma-metas', JSON.stringify({
+        saldoInicial,
+        saldoAtual,
+        stopGreen,
+        stopRed,
+        valorAposta,
+        metasConfiguradas
+      }))
+    }
+  }, [saldoInicial, saldoAtual, stopGreen, stopRed, valorAposta, metasConfiguradas])
+
+  // Verificar se meta foi atingida
+  useEffect(() => {
+    if (!metasConfiguradas) return
+
+    const lucro = saldoAtual - saldoInicial
+
+    // Verificar Stop Green (meta de ganho)
+    if (stopGreen > 0 && lucro >= stopGreen) {
+      setMetaAtingida("green")
+      setNotifications(prev => [
+        `🎉 STOP GREEN ATINGIDO! Lucro de R$ ${lucro.toFixed(2)}. Hora de parar!`,
+        ...prev
+      ].slice(0, 8))
+    }
+    // Verificar Stop Red (meta de perda)
+    else if (stopRed > 0 && lucro <= -stopRed) {
+      setMetaAtingida("red")
+      setNotifications(prev => [
+        `🛑 STOP RED ATINGIDO! Perda de R$ ${Math.abs(lucro).toFixed(2)}. Hora de parar!`,
+        ...prev
+      ].slice(0, 8))
+    }
+    else {
+      setMetaAtingida(null)
+    }
+  }, [saldoAtual, saldoInicial, stopGreen, stopRed, metasConfiguradas])
+
+  const configurarMetas = () => {
+    if (saldoInicial <= 0 || stopGreen <= 0 || stopRed <= 0 || valorAposta <= 0) {
+      alert("Por favor, preencha todos os campos com valores válidos!")
+      return
+    }
+
+    setSaldoAtual(saldoInicial)
+    setMetasConfiguradas(true)
+    setShowMetasConfig(false)
+    setMetaAtingida(null)
+    setNotifications(prev => [
+      `✅ Metas configuradas! Stop Green: R$ ${stopGreen} | Stop Red: R$ ${stopRed}`,
+      ...prev
+    ].slice(0, 8))
+  }
+
+  const resetarMetas = () => {
+    setSaldoInicial(0)
+    setSaldoAtual(0)
+    setStopGreen(0)
+    setStopRed(0)
+    setValorAposta(0)
+    setMetasConfiguradas(false)
+    setMetaAtingida(null)
+    setShowMetasConfig(false)
+    localStorage.removeItem('fantasma-metas')
+    setNotifications(prev => [
+      `🔄 Metas resetadas!`,
+      ...prev
+    ].slice(0, 8))
+  }
+
+  const registrarResultado = (ganhou: boolean) => {
+    if (!metasConfiguradas) {
+      alert("Configure suas metas primeiro!")
+      return
+    }
+
+    if (metaAtingida) {
+      alert(`Meta ${metaAtingida === 'green' ? 'de ganho' : 'de perda'} já foi atingida! Resetar para continuar.`)
+      return
+    }
+
+    const novoSaldo = ganhou 
+      ? saldoAtual + (valorAposta * 35) // Pagamento 35:1 na roleta
+      : saldoAtual - valorAposta
+
+    setSaldoAtual(novoSaldo)
+
+    const lucro = novoSaldo - saldoInicial
+    const emoji = ganhou ? "🎉" : "😔"
+    const texto = ganhou 
+      ? `Ganhou R$ ${(valorAposta * 35).toFixed(2)}!` 
+      : `Perdeu R$ ${valorAposta.toFixed(2)}`
+
+    setNotifications(prev => [
+      `${emoji} ${texto} | Lucro atual: R$ ${lucro.toFixed(2)}`,
+      ...prev
+    ].slice(0, 8))
+  }
+
+  // Carregar histórico do banco de dados
+  const loadHistoryFromDB = async () => {
+    try {
+      setIsSyncing(true)
+      const history = await getAllHistory()
+      
+      if (history && history.length > 0) {
+        const numbersFromDB = history.reverse().map(h => h.number)
+        setNumbers(numbersFromDB)
+        setDbConnected(true)
+        
+        // Gerar sugestões automaticamente
+        const newSuggestions = generateSuggestions(history)
+        setSuggestions(newSuggestions)
+      } else {
+        setDbConnected(false) // Sem histórico = não conectado ou não configurado
+      }
+    } catch (error) {
+      console.error('Erro ao carregar histórico:', error)
+      setDbConnected(false)
+    } finally {
+      setIsSyncing(false)
+    }
+  }
 
   // Detectar padrões
   useEffect(() => {
-    if (numbers.length < 2) {
+    if (numbers.length < 1) {
       setPatterns([])
       return
     }
 
-    const detectedPatterns: Pattern[] = []
-    const newNotifications: string[] = []
-
-    // 1. Padrão Crescente Normal
-    let crescenteCount = 1
-    for (let i = numbers.length - 1; i > 0; i--) {
-      if (numbers[i] === numbers[i - 1] + 1) {
-        crescenteCount++
-      } else {
-        break
-      }
-    }
-
-    if (crescenteCount >= 2) {
-      const nextExpected = numbers[numbers.length - 1] + 1
-      const probability = Math.max(10, 100 - crescenteCount * 15)
-      
-      detectedPatterns.push({
-        type: "crescente",
-        count: crescenteCount,
-        nextExpected,
-        probability,
-        active: true
-      })
-
-      if (crescenteCount === 2) {
-        newNotifications.push(`📈 Padrão crescente iniciado!`)
-      } else if (crescenteCount >= 3) {
-        newNotifications.push(`🔥 Padrão crescente forte: ${crescenteCount} números seguidos!`)
-      }
-    }
-
-    // 2. Padrão Decrescente Normal
-    let decrescenteCount = 1
-    for (let i = numbers.length - 1; i > 0; i--) {
-      if (numbers[i] === numbers[i - 1] - 1) {
-        decrescenteCount++
-      } else {
-        break
-      }
-    }
-
-    if (decrescenteCount >= 2) {
-      const nextExpected = numbers[numbers.length - 1] - 1
-      const probability = Math.max(10, 100 - decrescenteCount * 15)
-      
-      detectedPatterns.push({
-        type: "decrescente",
-        count: decrescenteCount,
-        nextExpected,
-        probability,
-        active: true
-      })
-
-      if (decrescenteCount === 2) {
-        newNotifications.push(`📉 Padrão decrescente iniciado!`)
-      } else if (decrescenteCount >= 3) {
-        newNotifications.push(`🔥 Padrão decrescente forte: ${decrescenteCount} números seguidos!`)
-      }
-    }
-
-    // 3. Padrão de Terminais (MAIS IMPORTANTE)
-    let terminalCount = 1
-    const getTerminal = (n: number) => n % 10
-    
-    for (let i = numbers.length - 1; i > 0; i--) {
-      const currentTerminal = getTerminal(numbers[i])
-      const previousTerminal = getTerminal(numbers[i - 1])
-      
-      // Verifica se o terminal cresceu (incluindo 9 -> 0)
-      const isSequential = 
-        currentTerminal === previousTerminal + 1 ||
-        (previousTerminal === 9 && currentTerminal === 0)
-      
-      if (isSequential) {
-        terminalCount++
-      } else {
-        break
-      }
-    }
-
-    if (terminalCount >= 2) {
-      const lastTerminal = getTerminal(numbers[numbers.length - 1])
-      const nextTerminal = (lastTerminal + 1) % 10
-      const probability = Math.max(15, 100 - terminalCount * 12)
-      
-      detectedPatterns.push({
-        type: "terminal",
-        count: terminalCount,
-        nextExpected: `Terminal ${nextTerminal}`,
-        probability,
-        active: true
-      })
-
-      if (terminalCount === 2) {
-        newNotifications.push(`🔚 Padrão de terminais detectado!`)
-      } else if (terminalCount >= 3) {
-        newNotifications.push(`⭐ Padrão de terminais FORTE: ${terminalCount} números! Próximo terminal: ${nextTerminal}`)
-      }
-    }
-
+    const detectedPatterns = detectAllPatterns(numbers)
     setPatterns(detectedPatterns)
-    
-    // Adiciona notificações apenas se houver mudanças
-    if (newNotifications.length > 0) {
-      setNotifications(prev => [...newNotifications, ...prev].slice(0, 5))
+
+    // Gerar notificações para novos padrões
+    if (detectedPatterns.length > 0 && numbers.length > 1) {
+      const newNotifications: string[] = []
+      
+      detectedPatterns.forEach(pattern => {
+        if (pattern.probability >= 75) {
+          newNotifications.push(`🔥 ${pattern.description} detectado! (${pattern.probability}%)`)
+        } else if (pattern.probability >= 65) {
+          newNotifications.push(`⚡ ${pattern.description} ativo (${pattern.probability}%)`)
+        }
+      })
+
+      if (newNotifications.length > 0) {
+        setNotifications(prev => [...newNotifications, ...prev].slice(0, 8))
+      }
     }
   }, [numbers])
 
-  const addNumber = () => {
+  // Atualizar sugestões quando números mudarem
+  useEffect(() => {
+    if (numbers.length >= 10 && dbConnected) {
+      updateSuggestions()
+    }
+  }, [numbers, dbConnected])
+
+  const updateSuggestions = async () => {
+    try {
+      const history = await getAllHistory()
+      if (history && history.length >= 10) {
+        const newSuggestions = generateSuggestions(history)
+        setSuggestions(newSuggestions)
+        
+        // Salvar sugestão no banco
+        try {
+          await saveSuggestion(newSuggestions, history.length)
+        } catch (error) {
+          console.log('Erro ao salvar sugestão (não crítico):', error)
+        }
+      }
+    } catch (error) {
+      console.error('Erro ao atualizar sugestões:', error)
+    }
+  }
+
+  const addNumber = async () => {
     const num = parseInt(inputValue)
     if (!isNaN(num) && num >= 0 && num <= 36) {
       setNumbers(prev => [...prev, num])
       setInputValue("")
+      
+      // Salvar no banco de dados
+      if (dbConnected) {
+        try {
+          const color = num === 0 ? 'green' : 
+                       [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(num) ? 'red' : 'black'
+          await saveNumberToHistory(num, color)
+        } catch (error) {
+          console.error('Erro ao salvar no banco:', error)
+        }
+      }
     }
   }
 
-  const removeLastNumber = () => {
-    setNumbers(prev => prev.slice(0, -1))
-    setNotifications(prev => [...prev, "⚠️ Último número removido"].slice(0, 5))
-  }
-
-  const clearAll = () => {
+  const clearNumbers = async () => {
     setNumbers([])
     setPatterns([])
     setNotifications([])
-    setOcrResult("")
-  }
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      addNumber()
+    setSuggestions(null)
+    
+    // Limpar banco de dados
+    if (dbConnected) {
+      try {
+        await clearHistory()
+      } catch (error) {
+        console.error('Erro ao limpar banco:', error)
+      }
     }
   }
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+  const getNumberColor = (num: number) => {
+    if (num === 0) return "bg-green-500"
+    const redNumbers = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
+    return redNumbers.includes(num) ? "bg-red-500" : "bg-gray-900"
+  }
+
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
     if (!file) return
 
     setIsAnalyzing(true)
     setOcrResult("")
 
     try {
-      // Converter imagem para base64
-      const reader = new FileReader()
-      reader.onloadend = async () => {
-        const base64Image = reader.result as string
+      const formData = new FormData()
+      formData.append('image', file)
 
-        console.log('📤 Enviando imagem para análise...')
+      const response = await fetch('/api/ocr', {
+        method: 'POST',
+        body: formData,
+      })
 
-        // Chamar API de análise de imagem (OpenAI Vision)
-        const response = await fetch('/api/analyze-image', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            image: base64Image,
-            prompt: "Analise esta imagem de uma roleta e extraia APENAS os números que aparecem nos resultados/histórico. Liste os números na ordem em que aparecem (do mais antigo ao mais recente, da esquerda para direita ou de cima para baixo). Retorne apenas os números separados por vírgula, sem texto adicional. Exemplo: 12, 5, 23, 14, 8"
-          }),
-        })
+      const data = await response.json()
 
-        const data = await response.json()
-
-        if (!response.ok) {
-          console.error('❌ Erro na resposta:', data)
+      if (data.success && data.numbers) {
+        setOcrResult(`Números detectados: ${data.numbers.join(', ')}`)
+        
+        // Adicionar números detectados
+        const validNumbers = data.numbers.filter((n: number) => n >= 0 && n <= 36)
+        if (validNumbers.length > 0) {
+          setNumbers(prev => [...prev, ...validNumbers])
           
-          if (data.error === 'Chave da OpenAI não configurada') {
-            setOcrResult("⚠️ Configure a chave OPENAI_API_KEY nas configurações do projeto para usar o OCR.")
-          } else {
-            setOcrResult(`❌ Erro ao analisar imagem: ${data.details || data.error || 'Erro desconhecido'}`)
+          // Salvar no banco de dados
+          if (dbConnected) {
+            for (const num of validNumbers) {
+              try {
+                const color = num === 0 ? 'green' : 
+                             [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(num) ? 'red' : 'black'
+                await saveNumberToHistory(num, color)
+              } catch (error) {
+                console.error('Erro ao salvar número do OCR:', error)
+              }
+            }
           }
-          setIsAnalyzing(false)
-          return
         }
-
-        const detectedNumbers = data.numbers || []
-
-        console.log('✅ Números detectados:', detectedNumbers)
-
-        if (detectedNumbers.length > 0) {
-          setOcrResult(`✅ Detectados ${detectedNumbers.length} números: ${detectedNumbers.join(', ')}`)
-          setNotifications(prev => [`🎯 OCR detectou ${detectedNumbers.length} números!`, ...prev].slice(0, 5))
-          
-          // Adicionar números automaticamente
-          setNumbers(prev => [...prev, ...detectedNumbers])
-        } else {
-          setOcrResult("⚠️ Nenhum número detectado na imagem. Tente uma imagem mais clara dos resultados da roleta.")
-        }
-
-        setIsAnalyzing(false)
+      } else {
+        setOcrResult(data.error || "Erro ao processar imagem")
       }
-
-      reader.onerror = () => {
-        console.error('❌ Erro ao ler arquivo')
-        setOcrResult("❌ Erro ao ler o arquivo. Tente novamente.")
-        setIsAnalyzing(false)
-      }
-
-      reader.readAsDataURL(file)
     } catch (error) {
-      console.error('❌ Erro ao processar imagem:', error)
-      setOcrResult("❌ Erro ao analisar imagem. Tente novamente.")
-      setIsAnalyzing(false)
+      console.error('Erro no OCR:', error)
+      setOcrResult("Erro ao processar imagem")
     } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ""
-      }
+      setIsAnalyzing(false)
     }
   }
 
-  const triggerFileInput = () => {
-    fileInputRef.current?.click()
+  // Calcular estatísticas dos números
+  const getNumberStats = () => {
+    const frequency: { [key: number]: number } = {}
+    numbers.forEach(num => {
+      frequency[num] = (frequency[num] || 0) + 1
+    })
+
+    const sortedByFrequency = Object.entries(frequency)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+
+    return sortedByFrequency
   }
 
+  const topNumbers = getNumberStats()
+
+  // Detectar números que "puxam" outros
+  const numerosPuxam = detectarNumerosPuxam(numbers)
+  const ultimoNumero = numbers[numbers.length - 1]
+  const penultimoNumero = numbers[numbers.length - 2]
+  
+  const numerosPuxadosUltimo = ultimoNumero !== undefined ? numerosPuxam[ultimoNumero] : null
+  const numerosPuxadosPenultimo = penultimoNumero !== undefined ? numerosPuxam[penultimoNumero] : null
+
+  const lucroAtual = saldoAtual - saldoInicial
+  const progressoGreen = stopGreen > 0 ? Math.min((lucroAtual / stopGreen) * 100, 100) : 0
+  const progressoRed = stopRed > 0 ? Math.min((Math.abs(lucroAtual) / stopRed) * 100, 100) : 0
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 sm:p-6 md:p-8">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-black text-white p-4 md:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <div className="text-center mb-6">
-          <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-white mb-3 tracking-tight">
-            🎰 Analisador de Roleta
-          </h1>
-          <p className="text-lg sm:text-xl text-purple-200">
-            Detecte padrões, tendências e comportamentos numéricos em tempo real
+        <div className="text-center space-y-2">
+          <div className="flex items-center justify-center gap-3">
+            <Ghost className="w-12 h-12 text-white animate-pulse" />
+            <h1 className="text-4xl md:text-5xl font-bold text-white">
+              Fantasma.IA
+            </h1>
+          </div>
+          <p className="text-white/60 text-sm md:text-base">
+            Análise avançada de padrões com IA e probabilidade em tempo real
           </p>
+          
+          {/* Status do Banco de Dados */}
+          <div className="flex items-center justify-center gap-2 mt-2">
+            <Database className={`w-4 h-4 ${dbConnected ? 'text-green-400' : 'text-red-400'}`} />
+            <span className={`text-xs ${dbConnected ? 'text-green-400' : 'text-red-400'}`}>
+              {isSyncing ? 'Sincronizando...' : dbConnected ? 'Banco conectado' : 'Banco desconectado'}
+            </span>
+          </div>
         </div>
 
-        {/* Botões de Captura de Tela - TOPO */}
-        <div className="mb-6 flex flex-col sm:flex-row gap-3 justify-center">
-          {/* Botão OCR Principal */}
-          <button
-            onClick={triggerFileInput}
-            disabled={isAnalyzing}
-            className="flex items-center justify-center gap-2 px-8 py-4 bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-          >
-            {isAnalyzing ? (
-              <>
-                <Loader2 className="w-6 h-6 animate-spin" />
-                Analisando imagem...
-              </>
-            ) : (
-              <>
-                <Upload className="w-6 h-6" />
-                📸 Analisar Imagem (OCR)
-              </>
-            )}
-          </button>
-
-          {/* Input oculto para upload */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleImageUpload}
-            className="hidden"
-          />
-
-          {/* Botão de Ajuda */}
-          <button
-            onClick={() => setShowHelp(!showHelp)}
-            className="flex items-center justify-center gap-2 px-6 py-4 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
-          >
-            <Info className="w-5 h-5" />
-            Como usar?
-          </button>
-        </div>
-
-        {/* Resultado OCR */}
-        {ocrResult && (
-          <div className={`mb-6 backdrop-blur-lg rounded-2xl p-6 border-2 shadow-2xl animate-fadeIn ${
-            ocrResult.includes('❌') || ocrResult.includes('⚠️')
-              ? 'bg-gradient-to-r from-red-500/20 to-orange-600/20 border-red-400/50'
-              : 'bg-gradient-to-r from-green-500/20 to-emerald-600/20 border-green-400/50'
-          }`}>
-            <div className="flex items-start gap-3">
-              <Camera className={`w-6 h-6 flex-shrink-0 mt-1 ${
-                ocrResult.includes('❌') || ocrResult.includes('⚠️') ? 'text-red-400' : 'text-green-400'
-              }`} />
-              <div className="flex-1">
-                <h3 className="text-xl font-bold text-white mb-2">Resultado da Análise OCR</h3>
-                <p className="text-white/90">{ocrResult}</p>
-              </div>
+        {/* Gerenciamento de Metas */}
+        <div className={`bg-gradient-to-br from-blue-500/20 to-blue-600/20 backdrop-blur-lg rounded-2xl p-6 border-2 shadow-2xl ${
+          metaAtingida === 'green' ? 'border-green-500 animate-pulse' :
+          metaAtingida === 'red' ? 'border-red-500 animate-pulse' :
+          'border-blue-500/50'
+        }`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <DollarSign className="w-6 h-6 text-purple-400" />
+              <h2 className="text-lg font-bold text-blue-400">Gerenciamento de Metas</h2>
+            </div>
+            <div className="flex gap-2">
+              {!metasConfiguradas ? (
+                <button
+                  onClick={() => setShowMetasConfig(!showMetasConfig)}
+                  className="bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg font-semibold transition-all text-sm"
+                >
+                  Configurar Metas
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowMetasConfig(!showMetasConfig)}
+                    className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded-lg transition-all text-xs"
+                  >
+                    {showMetasConfig ? 'Ocultar' : 'Editar'}
+                  </button>
+                  <button
+                    onClick={resetarMetas}
+                    className="bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 px-3 py-2 rounded-lg transition-all text-xs"
+                  >
+                    Resetar
+                  </button>
+                </>
+              )}
             </div>
           </div>
-        )}
 
-        {/* Modal de Ajuda */}
-        {showHelp && (
-          <div className="mb-6 bg-gradient-to-r from-blue-500/20 to-cyan-600/20 backdrop-blur-lg rounded-2xl p-6 border-2 border-blue-400/50 shadow-2xl animate-fadeIn">
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-                <Camera className="w-6 h-6 text-blue-400" />
-                📸 Como usar o OCR Automático
-              </h2>
-              <button
-                onClick={() => setShowHelp(false)}
-                className="text-white/60 hover:text-white transition-colors"
-              >
-                ✕
-              </button>
-            </div>
+          {/* Configuração de Metas */}
+          {showMetasConfig && (
+            <div className="bg-white/5 rounded-xl p-4 border border-white/10 mb-4 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-white/60 mb-1 block">Saldo Inicial (R$)</label>
+                  <input
+                    type="number"
+                    value={saldoInicial || ''}
+                    onChange={(e) => setSaldoInicial(parseFloat(e.target.value) || 0)}
+                    placeholder="Ex: 1000"
+                    className="w-full bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2 text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
 
-            <div className="space-y-4 text-white/90">
-              <div className="bg-white/10 rounded-xl p-4">
-                <h3 className="font-bold text-lg mb-2 text-cyan-300">🎯 Como funciona:</h3>
-                <ol className="list-decimal list-inside space-y-2 text-sm">
-                  <li><strong>Clique no botão "Analisar Imagem (OCR)"</strong> acima</li>
-                  <li><strong>Selecione uma foto/print</strong> da tela da roleta mostrando os números</li>
-                  <li><strong>A IA analisa automaticamente</strong> e extrai os números da imagem</li>
-                  <li><strong>Os números são adicionados</strong> automaticamente ao analisador</li>
-                  <li><strong>Padrões são detectados</strong> instantaneamente!</li>
-                </ol>
-              </div>
+                <div>
+                  <label className="text-xs text-white/60 mb-1 block">Valor por Aposta (R$)</label>
+                  <input
+                    type="number"
+                    value={valorAposta || ''}
+                    onChange={(e) => setValorAposta(parseFloat(e.target.value) || 0)}
+                    placeholder="Ex: 10"
+                    className="w-full bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2 text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
 
-              <div className="bg-white/10 rounded-xl p-4">
-                <h3 className="font-bold text-lg mb-2 text-green-300">✅ O que a IA detecta:</h3>
-                <ul className="space-y-1 text-sm">
-                  <li>✅ Números visíveis na tela da roleta</li>
-                  <li>✅ Histórico de resultados recentes</li>
-                  <li>✅ Sequências de jogadas</li>
-                  <li>✅ Números em tabelas e listas</li>
-                  <li>✅ Extração automática e adição ao app</li>
-                </ul>
-              </div>
+                <div>
+                  <label className="text-xs text-white/60 mb-1 block">Stop Green - Meta de Ganho (R$)</label>
+                  <input
+                    type="number"
+                    value={stopGreen || ''}
+                    onChange={(e) => setStopGreen(parseFloat(e.target.value) || 0)}
+                    placeholder="Ex: 500"
+                    className="w-full bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2 text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
 
-              <div className="bg-white/10 rounded-xl p-4">
-                <h3 className="font-bold text-lg mb-2 text-yellow-300">📋 Dicas para melhores resultados:</h3>
-                <ul className="space-y-1 text-sm">
-                  <li>• Tire um print <strong>claro e legível</strong> da área dos números</li>
-                  <li>• Certifique-se que os <strong>números estão visíveis</strong> e não cortados</li>
-                  <li>• Prefira imagens com <strong>boa iluminação</strong> e <strong>contraste</strong></li>
-                  <li>• Evite imagens borradas ou com reflexos</li>
-                  <li>• Quanto mais números visíveis, melhor a análise!</li>
-                </ul>
-              </div>
-
-              <div className="bg-gradient-to-r from-purple-500/20 to-pink-600/20 rounded-xl p-4 border border-purple-400/30">
-                <h3 className="font-bold text-lg mb-2 text-purple-300">🚀 Exemplo de uso:</h3>
-                <div className="text-sm space-y-2">
-                  <p><strong>1.</strong> Tire um print da roleta mostrando: 12, 13, 14, 28</p>
-                  <p><strong>2.</strong> Clique em "Analisar Imagem (OCR)"</p>
-                  <p><strong>3.</strong> Selecione a imagem</p>
-                  <p><strong>4.</strong> IA detecta: "✅ Detectados 4 números: 12, 13, 14, 28"</p>
-                  <p><strong>5.</strong> Números são adicionados automaticamente!</p>
-                  <p><strong>6.</strong> Padrão crescente é detectado (12→13→14)</p>
+                <div>
+                  <label className="text-xs text-white/60 mb-1 block">Stop Red - Meta de Perda (R$)</label>
+                  <input
+                    type="number"
+                    value={stopRed || ''}
+                    onChange={(e) => setStopRed(parseFloat(e.target.value) || 0)}
+                    placeholder="Ex: 300"
+                    className="w-full bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
                 </div>
               </div>
 
-              <div className="text-center pt-2">
-                <p className="text-lg font-bold text-cyan-300">
-                  📸 Pronto para testar? Clique no botão azul acima e selecione uma imagem!
+              <button
+                onClick={configurarMetas}
+                className="w-full bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 px-6 py-3 rounded-lg font-bold transition-all transform hover:scale-105"
+              >
+                Salvar Configurações
+              </button>
+            </div>
+          )}
+
+          {/* Dashboard de Metas */}
+          {metasConfiguradas && (
+            <div className="space-y-4">
+              {/* Alerta de Meta Atingida */}
+              {metaAtingida && (
+                <div className={`p-4 rounded-xl border-2 ${
+                  metaAtingida === 'green' 
+                    ? 'bg-green-500/20 border-green-500' 
+                    : 'bg-red-500/20 border-red-500'
+                } animate-pulse`}>
+                  <div className="flex items-center gap-3">
+                    {metaAtingida === 'green' ? (
+                      <CheckCircle className="w-8 h-8 text-green-400" />
+                    ) : (
+                      <XCircle className="w-8 h-8 text-red-400" />
+                    )}
+                    <div>
+                      <p className="font-bold text-lg">
+                        {metaAtingida === 'green' ? '🎉 STOP GREEN ATINGIDO!' : '🛑 STOP RED ATINGIDO!'}
+                      </p>
+                      <p className="text-sm text-white/80">
+                        {metaAtingida === 'green' 
+                          ? 'Parabéns! Você atingiu sua meta de ganho. Hora de parar e garantir o lucro!'
+                          : 'Você atingiu sua meta de perda. Pare agora para evitar perdas maiores!'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Saldo e Lucro */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+                  <p className="text-xs text-white/60 mb-1">Saldo Inicial</p>
+                  <p className="text-2xl font-bold text-white">R$ {saldoInicial.toFixed(2)}</p>
+                </div>
+
+                <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+                  <p className="text-xs text-white/60 mb-1">Saldo Atual</p>
+                  <p className="text-2xl font-bold text-white">R$ {saldoAtual.toFixed(2)}</p>
+                </div>
+
+                <div className={`rounded-xl p-4 border-2 ${
+                  lucroAtual > 0 ? 'bg-green-500/10 border-green-500/50' :
+                  lucroAtual < 0 ? 'bg-red-500/10 border-red-500/50' :
+                  'bg-white/5 border-white/10'
+                }`}>
+                  <p className="text-xs text-white/60 mb-1">Lucro/Prejuízo</p>
+                  <p className={`text-2xl font-bold ${
+                    lucroAtual > 0 ? 'text-green-400' :
+                    lucroAtual < 0 ? 'text-red-400' :
+                    'text-white'
+                  }`}>
+                    {lucroAtual >= 0 ? '+' : ''}R$ {lucroAtual.toFixed(2)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Progresso das Metas */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Stop Green */}
+                <div className="bg-green-500/10 rounded-xl p-4 border border-green-500/30">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-sm font-semibold text-green-400">Stop Green (Meta de Ganho)</p>
+                    <p className="text-xs text-green-400">R$ {stopGreen.toFixed(2)}</p>
+                  </div>
+                  <div className="bg-white/10 rounded-full h-3 overflow-hidden mb-2">
+                    <div 
+                      className="bg-gradient-to-r from-green-400 to-green-600 h-full transition-all duration-500"
+                      style={{ width: `${lucroAtual > 0 ? progressoGreen : 0}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-white/60">
+                    Faltam R$ {Math.max(0, stopGreen - lucroAtual).toFixed(2)} para atingir
+                  </p>
+                </div>
+
+                {/* Stop Red */}
+                <div className="bg-red-500/10 rounded-xl p-4 border border-red-500/30">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-sm font-semibold text-red-400">Stop Red (Meta de Perda)</p>
+                    <p className="text-xs text-red-400">R$ {stopRed.toFixed(2)}</p>
+                  </div>
+                  <div className="bg-white/10 rounded-full h-3 overflow-hidden mb-2">
+                    <div 
+                      className="bg-gradient-to-r from-red-400 to-red-600 h-full transition-all duration-500"
+                      style={{ width: `${lucroAtual < 0 ? progressoRed : 0}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-white/60">
+                    Faltam R$ {Math.max(0, stopRed - Math.abs(lucroAtual)).toFixed(2)} para atingir
+                  </p>
+                </div>
+              </div>
+
+              {/* Botões de Registro */}
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  onClick={() => registrarResultado(true)}
+                  disabled={!!metaAtingida}
+                  className="bg-green-500 hover:bg-green-600 disabled:bg-green-500/30 disabled:cursor-not-allowed px-6 py-4 rounded-xl font-bold transition-all transform hover:scale-105 flex items-center justify-center gap-2"
+                >
+                  <CheckCircle className="w-5 h-5" />
+                  Ganhou (35:1)
+                </button>
+
+                <button
+                  onClick={() => registrarResultado(false)}
+                  disabled={!!metaAtingida}
+                  className="bg-red-500 hover:bg-red-600 disabled:bg-red-500/30 disabled:cursor-not-allowed px-6 py-4 rounded-xl font-bold transition-all transform hover:scale-105 flex items-center justify-center gap-2"
+                >
+                  <XCircle className="w-5 h-5" />
+                  Perdeu
+                </button>
+              </div>
+
+              <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                <p className="text-xs text-white/60">
+                  💡 <strong>Dica:</strong> Registre cada resultado para acompanhar seu progresso. 
+                  Quando atingir o Stop Green, você alcançou sua meta de ganho. 
+                  Se atingir o Stop Red, é hora de parar para evitar perdas maiores.
                 </p>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* Input Section */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 mb-6 border border-white/20 shadow-2xl">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <input
-              type="number"
-              min="0"
-              max="36"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Digite o número (0-36)"
-              className="flex-1 px-6 py-4 text-2xl font-bold bg-white/20 border-2 border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-4 focus:ring-purple-500 focus:border-purple-400 transition-all"
-            />
-            <button
-              onClick={addNumber}
-              className="px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 flex items-center justify-center gap-2"
-            >
-              <Plus className="w-6 h-6" />
-              Adicionar
-            </button>
-            <button
-              onClick={removeLastNumber}
-              disabled={numbers.length === 0}
-              className="px-6 py-4 bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-            >
-              <Trash2 className="w-6 h-6" />
-            </button>
-            <button
-              onClick={clearAll}
-              disabled={numbers.length === 0}
-              className="px-6 py-4 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-            >
-              Limpar
-            </button>
-          </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Últimos Números */}
-          <div className="lg:col-span-1">
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl h-full">
-              <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-                <Hash className="w-6 h-6 text-purple-400" />
-                Últimos Números
-              </h2>
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {numbers.length === 0 ? (
-                  <p className="text-white/60 text-center py-8">Nenhum número inserido ainda</p>
+        {/* Input Section */}
+        <div className="bg-green-500/10 backdrop-blur-lg rounded-2xl p-6 border border-green-500/30 shadow-2xl">
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex-1 flex gap-2">
+              <input
+                type="number"
+                min="0"
+                max="36"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && addNumber()}
+                placeholder="Digite um número (0-36)"
+                className="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
+              />
+              <button
+                onClick={addNumber}
+                className="bg-white hover:bg-white/90 text-black px-6 py-3 rounded-xl font-semibold transition-all transform hover:scale-105 shadow-lg flex items-center gap-2"
+              >
+                <Plus className="w-5 h-5" />
+                Adicionar
+              </button>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isAnalyzing}
+                className="bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-3 rounded-xl font-semibold transition-all flex items-center gap-2 disabled:opacity-50"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Analisando...
+                  </>
                 ) : (
-                  numbers.slice().reverse().map((num, idx) => (
+                  <>
+                    <Camera className="w-5 h-5" />
+                    OCR
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={clearNumbers}
+                className="bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 px-4 py-3 rounded-xl font-semibold transition-all flex items-center gap-2"
+              >
+                <Trash2 className="w-5 h-5" />
+                Limpar
+              </button>
+
+              <button
+                onClick={() => setShowHelp(!showHelp)}
+                className="bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-3 rounded-xl transition-all"
+              >
+                <Info className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {ocrResult && (
+            <div className="mt-4 p-3 bg-white/10 border border-white/30 rounded-lg text-sm">
+              {ocrResult}
+            </div>
+          )}
+
+          {showHelp && (
+            <div className="mt-4 p-4 bg-white/10 border border-white/30 rounded-lg text-sm space-y-2">
+              <p className="font-semibold text-white">💡 Como usar:</p>
+              <ul className="list-disc list-inside space-y-1 text-white/70">
+                <li>Configure suas metas de ganho (Stop Green) e perda (Stop Red)</li>
+                <li>Digite números de 0 a 36 que saíram na roleta</li>
+                <li>Use a câmera/OCR para detectar números automaticamente</li>
+                <li>Registre seus resultados (ganhou/perdeu) para acompanhar o saldo</li>
+                <li>Acompanhe padrões em tempo real</li>
+                <li>Veja sugestões baseadas em probabilidade e histórico</li>
+                <li>Pare quando atingir suas metas!</li>
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Sugestões de Jogadas */}
+        {suggestions && suggestions.suggested_numbers.length > 0 && (
+          <div className="bg-gradient-to-br from-white/10 to-white/5 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <Zap className="w-6 h-6 text-yellow-400" />
+                <h2 className="text-2xl font-bold text-yellow-400">Sugestões Inteligentes</h2>
+              </div>
+              <button
+                onClick={() => setShowSuggestions(!showSuggestions)}
+                className="text-xs bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg transition-all"
+              >
+                {showSuggestions ? 'Ocultar' : 'Mostrar'} Detalhes
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Números Sugeridos */}
+              <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+                <p className="text-white/60 text-sm mb-3">Números Recomendados:</p>
+                <div className="flex flex-wrap gap-2">
+                  {suggestions.suggested_numbers.map((num, idx) => (
                     <div
                       key={idx}
-                      className={`px-4 py-3 rounded-xl font-bold text-2xl text-center transition-all duration-300 ${
-                        idx === 0
-                          ? "bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-lg scale-105"
-                          : "bg-white/20 text-white"
-                      }`}
+                      className={`${getNumberColor(num)} px-4 py-2 rounded-lg font-bold text-lg shadow-lg transform hover:scale-110 transition-all cursor-pointer`}
                     >
                       {num}
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Padrões Detectados */}
-          <div className="lg:col-span-2">
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl mb-6">
-              <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-                <TrendingUp className="w-6 h-6 text-green-400" />
-                Padrões Ativos
-              </h2>
-              
-              {patterns.length === 0 ? (
-                <div className="text-center py-12">
-                  <AlertCircle className="w-16 h-16 text-white/40 mx-auto mb-4" />
-                  <p className="text-white/60 text-lg">Nenhum padrão detectado ainda</p>
-                  <p className="text-white/40 text-sm mt-2">Insira pelo menos 2 números para começar a análise</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {patterns.map((pattern, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-6 rounded-xl border-2 transition-all duration-300 ${
-                        pattern.type === "crescente"
-                          ? "bg-gradient-to-r from-green-500/20 to-emerald-600/20 border-green-400"
-                          : pattern.type === "decrescente"
-                          ? "bg-gradient-to-r from-orange-500/20 to-red-600/20 border-orange-400"
-                          : "bg-gradient-to-r from-purple-500/20 to-pink-600/20 border-purple-400"
-                      } ${pattern.count >= 3 ? "shadow-2xl scale-105" : ""}`}
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          {pattern.type === "crescente" && <TrendingUp className="w-8 h-8 text-green-400" />}
-                          {pattern.type === "decrescente" && <TrendingDown className="w-8 h-8 text-orange-400" />}
-                          {pattern.type === "terminal" && <Hash className="w-8 h-8 text-purple-400" />}
-                          <div>
-                            <h3 className="text-xl font-bold text-white">
-                              {pattern.type === "crescente" && "📈 Padrão Crescente"}
-                              {pattern.type === "decrescente" && "📉 Padrão Decrescente"}
-                              {pattern.type === "terminal" && "🔚 Padrão de Terminais"}
-                            </h3>
-                            <p className="text-white/70 text-sm">
-                              {pattern.count} números seguidos
-                            </p>
-                          </div>
-                        </div>
-                        {pattern.count >= 3 && (
-                          <span className="px-3 py-1 bg-yellow-500 text-yellow-900 font-bold text-xs rounded-full animate-pulse">
-                            FORTE
-                          </span>
-                        )}
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4 mt-4">
-                        <div className="bg-white/10 rounded-lg p-3">
-                          <p className="text-white/60 text-xs mb-1">Próximo Esperado</p>
-                          <p className="text-white font-bold text-xl">{pattern.nextExpected}</p>
-                        </div>
-                        <div className="bg-white/10 rounded-lg p-3">
-                          <p className="text-white/60 text-xs mb-1">Probabilidade</p>
-                          <p className="text-white font-bold text-xl">{pattern.probability}%</p>
-                        </div>
-                      </div>
-
-                      {pattern.type === "terminal" && (
-                        <div className="mt-3 p-3 bg-purple-500/20 rounded-lg border border-purple-400/30">
-                          <p className="text-purple-200 text-sm">
-                            💡 Este padrão ignora a dezena e foca apenas no último dígito
-                          </p>
-                        </div>
-                      )}
-                    </div>
                   ))}
                 </div>
-              )}
+              </div>
+
+              {/* Estatísticas */}
+              <div className="bg-white/5 rounded-xl p-4 border border-white/10 space-y-3">
+                <div>
+                  <p className="text-white/60 text-xs">Probabilidade:</p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-white/10 rounded-full h-2 overflow-hidden">
+                      <div 
+                        className="bg-gradient-to-r from-yellow-400 to-orange-400 h-full transition-all duration-500"
+                        style={{ width: `${suggestions.probability_score}%` }}
+                      />
+                    </div>
+                    <span className="text-yellow-400 font-bold text-sm">{suggestions.probability_score}%</span>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-white/60 text-xs">Confiança:</p>
+                  <p className={`font-bold text-sm ${
+                    suggestions.confidence === 'Alta' ? 'text-green-400' :
+                    suggestions.confidence === 'Média' ? 'text-yellow-400' : 'text-red-400'
+                  }`}>
+                    {suggestions.confidence}
+                  </p>
+                </div>
+
+                {showSuggestions && (
+                  <div>
+                    <p className="text-white/60 text-xs">Padrão Detectado:</p>
+                    <p className="text-white text-xs">{suggestions.pattern_detected}</p>
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Notificações */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl">
-              <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-                <AlertCircle className="w-6 h-6 text-yellow-400" />
-                Notificações Recentes
-              </h2>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {notifications.length === 0 ? (
-                  <p className="text-white/60 text-center py-4">Nenhuma notificação ainda</p>
-                ) : (
-                  notifications.map((notif, idx) => (
-                    <div
-                      key={idx}
-                      className="px-4 py-3 bg-white/20 rounded-lg text-white text-sm border border-white/10 animate-fadeIn"
+            {showSuggestions && (
+              <div className="mt-4 p-3 bg-white/5 border border-white/20 rounded-lg text-xs text-white/60">
+                <p className="font-semibold text-yellow-400 mb-1">ℹ️ Como funciona:</p>
+                <p>As sugestões são baseadas em análise estatística do histórico completo armazenado no banco de dados, 
+                incluindo frequência de números, padrões de sequência e números vizinhos. Quanto maior o histórico, 
+                mais precisas são as sugestões.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Numbers Display */}
+        {numbers.length > 0 && (
+          <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
+            <div className="flex items-center gap-2 mb-4">
+              <Hash className="w-5 h-5 text-white" />
+              <h2 className="text-xl font-bold">Últimos Números ({numbers.length})</h2>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {numbers.slice().reverse().map((num, idx) => (
+                <div
+                  key={idx}
+                  className={`${getNumberColor(num)} px-4 py-2 rounded-lg font-bold text-lg shadow-lg transform hover:scale-110 transition-all`}
+                >
+                  {num}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Patterns Section */}
+        {patterns.length > 0 && (
+          <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
+            <div className="flex items-center gap-2 mb-4">
+              <TrendingUp className="w-5 h-5 text-green-400" />
+              <h2 className="text-xl font-bold">Padrões Detectados</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {patterns.map((pattern, idx) => (
+                <div
+                  key={idx}
+                  className={`p-4 rounded-xl border-2 transition-all transform hover:scale-105 ${
+                    pattern.probability >= 75
+                      ? "bg-green-500/10 border-green-500/50"
+                      : pattern.probability >= 65
+                      ? "bg-yellow-500/10 border-yellow-500/50"
+                      : "bg-blue-500/10 border-blue-500/50"
+                  }`}
+                >
+                  <div className="flex items-start justify-between mb-2">
+                    <h3 className="font-semibold text-sm">{pattern.name}</h3>
+                    <span
+                      className={`text-xs font-bold px-2 py-1 rounded ${
+                        pattern.probability >= 75
+                          ? "bg-green-500/20 text-green-400"
+                          : pattern.probability >= 65
+                          ? "bg-yellow-500/20 text-yellow-400"
+                          : "bg-blue-500/20 text-blue-400"
+                      }`}
                     >
-                      {notif}
+                      {pattern.probability}%
+                    </span>
+                  </div>
+                  <p className="text-xs text-white/60 mb-2">{pattern.description}</p>
+                  {pattern.suggestedNumbers && pattern.suggestedNumbers.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {pattern.suggestedNumbers.map((num, i) => (
+                        <span
+                          key={i}
+                          className={`${getNumberColor(num)} px-2 py-1 rounded text-xs font-bold`}
+                        >
+                          {num}
+                        </span>
+                      ))}
                     </div>
-                  ))
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Estatísticas */}
+        {numbers.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Top 5 Números */}
+            <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
+              <div className="flex items-center gap-2 mb-4">
+                <TrendingUpIcon className="w-5 h-5 text-orange-400" />
+                <h2 className="text-xl font-bold">Top 5 Números Mais Frequentes</h2>
+              </div>
+              <div className="space-y-3">
+                {topNumbers.map(([num, count], idx) => (
+                  <div key={idx} className="flex items-center gap-3">
+                    <div className={`${getNumberColor(parseInt(num))} px-3 py-2 rounded-lg font-bold text-sm w-12 text-center`}>
+                      {num}
+                    </div>
+                    <div className="flex-1">
+                      <div className="bg-white/10 rounded-full h-2 overflow-hidden">
+                        <div 
+                          className="bg-gradient-to-r from-orange-400 to-red-400 h-full transition-all"
+                          style={{ width: `${(count / numbers.length) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                    <span className="text-white/60 text-sm">{count}x</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Números que "Puxam" */}
+            <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
+              <div className="flex items-center gap-2 mb-4">
+                <Target className="w-5 h-5 text-cyan-400" />
+                <h2 className="text-xl font-bold">Números que "Puxam"</h2>
+              </div>
+              <div className="space-y-4">
+                {ultimoNumero !== undefined && (
+                  <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+                    <p className="text-white/60 text-xs mb-2">Último Número ({ultimoNumero}) Puxa:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {numerosPuxadosUltimo && numerosPuxadosUltimo.length > 0 ? (
+                        numerosPuxadosUltimo.map((num, idx) => (
+                          <div key={idx} className={`${getNumberColor(num)} px-3 py-1 rounded-lg font-bold text-sm`}>
+                            {num}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-white/40 text-xs">Nenhum padrão detectado ainda</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {penultimoNumero !== undefined && (
+                  <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+                    <p className="text-white/60 text-xs mb-2">Penúltimo Número ({penultimoNumero}) Puxa:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {numerosPuxadosPenultimo && numerosPuxadosPenultimo.length > 0 ? (
+                        numerosPuxadosPenultimo.map((num, idx) => (
+                          <div key={idx} className={`${getNumberColor(num)} px-3 py-1 rounded-lg font-bold text-sm`}>
+                            {num}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-white/40 text-xs">Nenhum padrão detectado ainda</p>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Estatísticas Rápidas */}
-        {numbers.length > 0 && (
-          <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20 text-center">
-              <p className="text-white/60 text-sm mb-1">Total de Números</p>
-              <p className="text-white font-bold text-3xl">{numbers.length}</p>
+        {/* Notifications */}
+        {notifications.length > 0 && (
+          <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-6 border border-white/10 shadow-2xl">
+            <div className="flex items-center gap-2 mb-4">
+              <AlertCircle className="w-5 h-5 text-yellow-400" />
+              <h2 className="text-xl font-bold">Alertas Recentes</h2>
             </div>
-            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20 text-center">
-              <p className="text-white/60 text-sm mb-1">Último Número</p>
-              <p className="text-white font-bold text-3xl">{numbers[numbers.length - 1]}</p>
-            </div>
-            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20 text-center">
-              <p className="text-white/60 text-sm mb-1">Padrões Ativos</p>
-              <p className="text-white font-bold text-3xl">{patterns.length}</p>
-            </div>
-            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20 text-center">
-              <p className="text-white/60 text-sm mb-1">Terminal Atual</p>
-              <p className="text-white font-bold text-3xl">{numbers[numbers.length - 1] % 10}</p>
+            <div className="space-y-2">
+              {notifications.map((notif, idx) => (
+                <div
+                  key={idx}
+                  className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm animate-pulse"
+                >
+                  {notif}
+                </div>
+              ))}
             </div>
           </div>
         )}
