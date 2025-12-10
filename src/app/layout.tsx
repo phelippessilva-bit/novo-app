@@ -17,18 +17,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Fantasma.IA",
-  description: "Análise inteligente de roleta com IA",
+  title: "Fantasma.IA - Análise Inteligente de Roleta",
+  description: "Análise avançada de padrões de roleta com IA e probabilidade em tempo real",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
     title: "Fantasma.IA",
   },
+  icons: {
+    icon: "/icon.svg",
+    apple: "/icon-192.png",
+  },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#8b5cf6",
+  themeColor: "#000000",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({

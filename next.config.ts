@@ -1,10 +1,8 @@
 import type { NextConfig } from "next";
-import withPWA from "next-pwa";
 
 const nextConfig: NextConfig = {
-  devIndicators: false, // Remove widget de desenvolvimento Next.js
+  devIndicators: false,
   
-  // Ignorar erros durante build (compatibilidade Vercel)
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -12,10 +10,8 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   
-  // Configuração de imagens para principais provedores
   images: {
     remotePatterns: [
-      // Unsplash - Banco de imagens gratuitas
       {
         protocol: 'https',
         hostname: 'images.unsplash.com',
@@ -24,8 +20,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'unsplash.com',
       },
-      
-      // Supabase Storage
       {
         protocol: 'https',
         hostname: '*.supabase.co',
@@ -34,8 +28,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: '*.supabase.com',
       },
-      
-      // Firebase Storage
       {
         protocol: 'https',
         hostname: 'firebasestorage.googleapis.com',
@@ -44,8 +36,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'storage.googleapis.com',
       },
-      
-      // AWS S3 e CloudFront
       {
         protocol: 'https',
         hostname: '*.amazonaws.com',
@@ -58,8 +48,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 's3.amazonaws.com',
       },
-      
-      // Vercel Blob
       {
         protocol: 'https',
         hostname: '*.vercel-storage.com',
@@ -68,8 +56,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: '*.public.blob.vercel-storage.com',
       },
-      
-      // Cloudinary
       {
         protocol: 'https',
         hostname: 'res.cloudinary.com',
@@ -78,14 +64,10 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: '*.cloudinary.com',
       },
-      
-      // Pexels - Banco de imagens gratuitas
       {
         protocol: 'https',
         hostname: 'images.pexels.com',
       },
-      
-      // Pixabay - Banco de imagens gratuitas
       {
         protocol: 'https',
         hostname: 'pixabay.com',
@@ -94,8 +76,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'cdn.pixabay.com',
       },
-      
-      // GitHub (avatares, imagens de repos)
       {
         protocol: 'https',
         hostname: 'github.com',
@@ -108,8 +88,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'raw.githubusercontent.com',
       },
-      
-      // Imgur
       {
         protocol: 'https',
         hostname: 'i.imgur.com',
@@ -118,8 +96,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'imgur.com',
       },
-      
-      // Google Drive
       {
         protocol: 'https',
         hostname: 'drive.google.com',
@@ -128,8 +104,6 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'lh3.googleusercontent.com',
       },
-      
-      // YouTube thumbnails
       {
         protocol: 'https',
         hostname: 'img.youtube.com',
@@ -138,14 +112,10 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'i.ytimg.com',
       },
-      
-      // Vimeo thumbnails
       {
         protocol: 'https',
         hostname: 'i.vimeocdn.com',
       },
-      
-      // CDNs populares
       {
         protocol: 'https',
         hostname: 'cdn.jsdelivr.net',
@@ -154,26 +124,22 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'unpkg.com',
       },
-      
-      // Outros provedores populares
       {
         protocol: 'https',
-        hostname: '*.uploadthing.com', // UploadThing
+        hostname: '*.uploadthing.com',
       },
       {
         protocol: 'https',
-        hostname: '*.imagekit.io', // ImageKit
+        hostname: '*.imagekit.io',
       },
       {
         protocol: 'https',
-        hostname: '*.sanity.io', // Sanity CMS
+        hostname: '*.sanity.io',
       },
       {
         protocol: 'https',
-        hostname: 'assets.vercel.com', // Vercel assets
+        hostname: 'assets.vercel.com',
       },
-      
-      // Para desenvolvimento local
       {
         protocol: 'http',
         hostname: 'localhost',
@@ -184,20 +150,15 @@ const nextConfig: NextConfig = {
       },
     ],
     
-    // Formatos de imagem suportados
     formats: ['image/webp', 'image/avif'],
-    
-    // Tamanhos otimizados para diferentes dispositivos
     deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
     imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
   },
   
-  // Configuração experimental para melhor performance
   experimental: {
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
   },
   
-  // Headers CORS para permitir acesso da plataforma Lasy
   async headers() {
     return [
       {
@@ -225,9 +186,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withPWA({
-  dest: 'public',
-  register: true,
-  skipWaiting: true,
-  disable: process.env.NODE_ENV === 'development',
-})(nextConfig);
+export default nextConfig;

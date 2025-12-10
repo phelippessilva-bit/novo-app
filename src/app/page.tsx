@@ -42,7 +42,18 @@ export default function RouletteAnalyzer() {
 
   // Carregar histórico do banco ao iniciar
   useEffect(() => {
-    loadHistoryFromDB()
+    // Verificar se Supabase está configurado antes de tentar carregar
+    const checkSupabase = async () => {
+      try {
+        await loadHistoryFromDB()
+      } catch (error) {
+        // Erro silencioso - apenas marca como desconectado
+        setDbConnected(false)
+      }
+    }
+    
+    checkSupabase()
+    
     // Carregar metas do localStorage
     const savedMetas = localStorage.getItem('fantasma-metas')
     if (savedMetas) {
@@ -176,7 +187,7 @@ export default function RouletteAnalyzer() {
         setDbConnected(false) // Sem histórico = não conectado ou não configurado
       }
     } catch (error) {
-      console.error('Erro ao carregar histórico:', error)
+      // Erro silencioso - apenas marca como desconectado
       setDbConnected(false)
     } finally {
       setIsSyncing(false)
@@ -229,11 +240,11 @@ export default function RouletteAnalyzer() {
         try {
           await saveSuggestion(newSuggestions, history.length)
         } catch (error) {
-          console.log('Erro ao salvar sugestão (não crítico):', error)
+          // Erro silencioso
         }
       }
     } catch (error) {
-      console.error('Erro ao atualizar sugestões:', error)
+      // Erro silencioso
     }
   }
 
@@ -243,14 +254,14 @@ export default function RouletteAnalyzer() {
       setNumbers(prev => [...prev, num])
       setInputValue("")
       
-      // Salvar no banco de dados
+      // Salvar no banco de dados apenas se conectado
       if (dbConnected) {
         try {
           const color = num === 0 ? 'green' : 
                        [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(num) ? 'red' : 'black'
           await saveNumberToHistory(num, color)
         } catch (error) {
-          console.error('Erro ao salvar no banco:', error)
+          // Erro silencioso
         }
       }
     }
@@ -262,12 +273,12 @@ export default function RouletteAnalyzer() {
     setNotifications([])
     setSuggestions(null)
     
-    // Limpar banco de dados
+    // Limpar banco de dados apenas se conectado
     if (dbConnected) {
       try {
         await clearHistory()
       } catch (error) {
-        console.error('Erro ao limpar banco:', error)
+        // Erro silencioso
       }
     }
   }
@@ -312,7 +323,7 @@ export default function RouletteAnalyzer() {
                              [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(num) ? 'red' : 'black'
                 await saveNumberToHistory(num, color)
               } catch (error) {
-                console.error('Erro ao salvar número do OCR:', error)
+                // Erro silencioso
               }
             }
           }
@@ -321,7 +332,6 @@ export default function RouletteAnalyzer() {
         setOcrResult(data.error || "Erro ao processar imagem")
       }
     } catch (error) {
-      console.error('Erro no OCR:', error)
       setOcrResult("Erro ao processar imagem")
     } finally {
       setIsAnalyzing(false)
@@ -604,7 +614,7 @@ export default function RouletteAnalyzer() {
         </div>
 
         {/* Input Section */}
-        <div className="bg-green-500/10 backdrop-blur-lg rounded-2xl p-6 border border-green-500/30 shadow-2xl">
+        <div className="bg-green-500/10 backdrop-blur-lg rounded-2xl p-6 border border-green-500/30 shadow-2xl lasy-highlight">
           <div className="flex flex-col md:flex-row gap-4">
             <div className="flex-1 flex gap-2">
               <input
